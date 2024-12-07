@@ -1,0 +1,66 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout GNAT-LLVM
+        uses: actions/checkout@v4
+        with:
+          repository: adacore/gnat-llvm
+          ref: 3d596322e94eb1f2cf749caffed2eb952aef9bfa
+          path: gnat-llvm
+
+      - name: Checkout GCC
+        uses: actions/checkout@v4
+        with:
+          repository: gcc-mirror/gcc
+          ref: releases/gcc-14
+          path: gnat-llvm/llvm-interface/gcc
+
+      - name: Configure Source Link
+        run: |
+          ln -s gcc/gcc/ada gnat-llvm/llvm-interface/gnat_src
+
+      # Using this wrapper patch instead of LLVMCreateTargetMachineWithABI.diff
+      # in the gnat-llvm/llvm/patches directory allows us to not have to
+      # rebuild LLVM.
+      - name: Apply CreateTargetMachineWithABI patch
+        run: |
+          wget -nv -P gnat-llvm/llvm/patches https://raw.githubusercontent.com/godunko/adawebpack/refs/heads/master/patches/llvm_wrapper2.patch
+          patch -d gnat-llvm/llvm-interface -i ../llvm/patches/llvm_wrapper2.patch
+
+      - name: Install a recent GNAT/GPRbuild
+        uses: alire-project/setup-alire@v3
+        with:
+          toolchain: gnat_native^14 gprbuild
+
+      - name: Install LLVM and Clang 16.0.x (Ubuntu 22.04)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          wget -nv https://github.com/llvm/llvm-project/releases/download/llvmorg-16.0.4/clang+llvm-16.0.4-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+          mkdir llvm-16
+          tar xvfC $PWD/clang+llvm-16.0.4-x86_64-linux-gnu-ubuntu-22.04.tar.xz llvm-16 --strip-components=1
+          echo "$PWD/llvm-16/bin" >> "$GITHUB_PATH"
+
+      - name: Install LLVM and Clang 16.0.x (Ubuntu 24.04)
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo apt update
+          sudo apt --assume-yes install llvm-16-dev clang-16 libclang-16-dev
+          echo "/usr/lib/llvm-16/bin" >> "$GITHUB_PATH"
+
+      - name: Build GNAT-LLVM
+        run: |
+          PATH=$(echo ~/.local/share/alire/toolchains/gnat_native*/bin):$PATH
+          PATH=$(echo ~/.local/share/alire/toolchains/gprbuild*/bin):$PATH
+          make -C gnat-llvm
